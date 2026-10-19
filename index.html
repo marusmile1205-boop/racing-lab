@@ -369,7 +369,7 @@ function getData(){return {bets:bets.map(x=>({...x})),betBudget,betTarget,betMod
 function setDirty(){dirty=true;document.getElementById("saveStatus").textContent="未保存の変更あり"}
 function toast(message){const t=document.getElementById("toast");t.textContent=message;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),1700)}
 function saveSilent(){if(currentId)races[currentId]=getData();localStorage.setItem(storeKey,JSON.stringify({races,currentId,apiUrl:document.getElementById("apiUrl").value}));refreshPicker();dirty=false;document.getElementById("saveStatus").textContent="保存済み"}
-function save(){saveSilent();refreshPicker();toast("端末に保存しました");window.racingCloud?.saveCurrent?.()}
+function save(){saveSilent();refreshPicker();toast("端末に保存しました");if(typeof window.racingCloud?.saveCurrent!=="function"){document.getElementById("cloudState").textContent="クラウド保存機能が利用できません。端末には保存済みです。ページを再読み込みせず、バックアップを保存してください";return}window.racingCloud.saveCurrent()}
 function applyData(d){bets=(d.bets||[]).map(x=>({...x}));betBudget=String(d.betBudget??"10000");betTarget=String(d.betTarget??"10000");betMode=d.betMode||"strength";document.getElementById("betBudget").value=betBudget;document.getElementById("betTarget").value=betTarget;document.getElementById("betMode").value=betMode;if(d.referenceCatalog){courseCatalog={...courseCatalog,...(d.referenceCatalog.courses||{})};winnerCatalog={...winnerCatalog,...(d.referenceCatalog.winners||{})};saveCatalog()}selectedHorseNumber=null;horses=(d.horses||[]).map(h=>({...blankHorse(h.n),...h}));fields.forEach(k=>document.getElementById(k).value=d[k]??"");syncBiasButtons();document.getElementById("horseSort").value="number";document.getElementById("horseSortOrder").value="asc";document.getElementById("search").value="";filter="all";document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));render();renderBets();renderReviewBets();renderHorseReview();refreshReferenceViews();dirty=false;document.getElementById("saveStatus").textContent="保存済み"}
 function refreshPicker(){renderSidebar();const sel=document.getElementById("racePicker");sel.innerHTML=Object.entries(races).map(([id,r])=>`<option value="${esc(id)}" ${id===currentId?"selected":""}>${esc(r.raceDate||"日付未設定")}　${esc(r.raceName||"名称未設定")}</option>`).join("")}
 function switchRace(id){if(!races[id])return;saveSilent();window.racingCloud?.saveCurrent?.();currentId=id;applyData(races[id]);refreshPicker();persistCurrent();}
@@ -800,7 +800,20 @@ async function loadCloud(){
   ready=true;
 }
 window.racingCloud={
- saveCurrent(){if(!user||!ready||!currentId)return;const id=currentId;const data=structuredClone(races[id]||getData());status('クラウドに保存中…');return queueWrite(async()=>{await setDoc(ref(id),data);remoteIds.add(id);status('クラウドに保存しました ✓')})},
+ saveCurrent(){
+  if(!user){status('Googleログインが必要です（端末には保存済み）');return Promise.resolve(false)}
+  if(!ready){status('クラウド同期の準備が未完了です。端末には保存済みです。バックアップを確認してください');return Promise.resolve(false)}
+  if(!currentId){status('保存するレースが選択されていません');return Promise.resolve(false)}
+  const id=currentId;
+  const data=structuredClone(races[id]||getData());
+  status('クラウドに保存中…');
+  return queueWrite(async()=>{
+   await setDoc(ref(id),data);
+   remoteIds.add(id);
+   status('クラウドに保存しました ✓');
+   return true;
+  });
+ },
  deleteRace(){if(!user||!ready)return;const ids=new Set(Object.keys(races));const toDelete=[...remoteIds].filter(id=>!ids.has(id));return queueWrite(async()=>{for(const id of toDelete){await deleteDoc(ref(id));remoteIds.delete(id)}status('クラウドの削除を反映しました ✓')})}
 };
 login.addEventListener('click',async()=>{try{status('Googleログイン中…');if(/iPhone|iPad|iPod/.test(navigator.userAgent)){await signInWithPopup(auth,provider)}else{await signInWithPopup(auth,provider)}}catch(e){status('ログイン失敗: '+(e.code||e.message))}});
