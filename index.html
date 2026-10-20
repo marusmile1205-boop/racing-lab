@@ -261,8 +261,8 @@ button,select{touch-action:manipulation}
  .cloudbar .userlabel{min-width:0}
  .cloudbar button{min-height:40px}
  #raceSidebar{max-height:unset;overflow:visible;padding:10px 12px}
- #recentRaces{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
- #recentRaces .race-link{flex-shrink:0}
+ #recentRaces{max-width:100%;overflow-x:visible;display:flex;flex-wrap:wrap;gap:8px}
+ #recentRaces .race-link{flex:1 1 135px;min-width:0;margin:0;overflow-wrap:anywhere}
  main{padding:12px max(10px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));min-width:0}
  .panel,.source-panel,.history-import-box,.history-year-card,.course-insight{max-width:100%;min-width:0}
  .title-row{flex-wrap:wrap;gap:8px}
@@ -491,7 +491,23 @@ document.getElementById('search').addEventListener('input',render);document.quer
 function syncBiasButtons(){document.querySelectorAll('[data-bias-group]').forEach(group=>{const selected=document.getElementById(group.dataset.biasGroup).value;group.querySelectorAll('[data-bias-value]').forEach(btn=>{const active=btn.dataset.biasValue===selected;btn.classList.toggle('selected',active);btn.setAttribute('aria-pressed',String(active))})})}
 document.querySelectorAll('[data-bias-group]').forEach(group=>group.addEventListener('click',event=>{const btn=event.target.closest('[data-bias-value]');if(!btn)return;const input=document.getElementById(group.dataset.biasGroup);input.value=btn.dataset.biasValue;syncBiasButtons();setDirty()}));
 fields.forEach(k=>document.getElementById(k).addEventListener("input",()=>{setDirty();if(k==="raceName"||k==="raceDate")render();if(["raceName","raceDate","courseVenue","courseSpec"].includes(k))refreshReferenceViews()}));
-document.getElementById("racePicker").addEventListener("change",e=>switchRace(e.target.value));document.getElementById("newRaceBtn").addEventListener("click",createRace);document.getElementById("deleteRaceBtn").addEventListener("click",()=>{if(Object.keys(races).length<=1){alert("最後のレースは削除できません");return}if(!confirm("このレースの予想ノートを削除しますか？"))return;const deletedId=currentId;delete races[currentId];currentId=Object.keys(races)[0];applyData(races[currentId]);refreshPicker();persistCurrent();window.racingCloud?.deleteRace?.(deletedId)});
+document.getElementById("racePicker").addEventListener("change",e=>switchRace(e.target.value));document.getElementById("newRaceBtn").addEventListener("click",createRace);document.getElementById("deleteRaceBtn").addEventListener("click",async()=>{
+ if(Object.keys(races).length<=1){alert("最後のレースは削除できません");return}
+ if(!confirm("このレースの予想ノートをすべての端末から削除しますか？"))return;
+ if(typeof window.racingCloud?.deleteRace!=="function"){
+  alert("クラウド削除機能の準備ができていません。削除は行いません");return;
+ }
+ const deletedId=currentId;
+ const btn=document.getElementById("deleteRaceBtn");btn.disabled=true;
+ try{
+  // Commit the cloud tombstone first, then remove the local copy.
+  const ok=await window.racingCloud.deleteRace(deletedId);
+  if(!ok){alert("クラウドへの削除が完了しませんでした。レースは残しています");return}
+  delete races[deletedId];currentId=Object.keys(races)[0];
+  applyData(races[currentId]);refreshPicker();persistCurrent();
+  toast("レースを削除し、クラウドに反映しました");
+ }finally{btn.disabled=false}
+});
 document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{if(mainTab!=='prediction')setMain('prediction');subTab=btn.dataset.tab;
   document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b===btn));
   document.querySelectorAll('.tab-pane').forEach(p=>p.hidden=p.id!=='tab-'+btn.dataset.tab);
@@ -500,7 +516,7 @@ document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click
 
 function setMain(tab){mainTab=tab;document.querySelectorAll('[data-main]').forEach(b=>b.classList.toggle('active',b.dataset.main===tab));document.getElementById('predictionContent').hidden=tab!=='prediction';document.getElementById('predictionSubtabs').hidden=tab!=='prediction';document.getElementById('reviewContent').hidden=tab!=='review';if(tab==='review'){renderReviewBets();renderHorseReview()}}
 document.querySelectorAll('[data-main]').forEach(b=>b.addEventListener('click',()=>setMain(b.dataset.main)));
-function renderSidebar(){const recent=document.getElementById('recentRaces'),older=document.getElementById('olderRaces');if(!recent)return;const ordered=Object.entries(races).sort((a,b)=>(b[1].raceDate||'').localeCompare(a[1].raceDate||'')||b[0].localeCompare(a[0]));const draw=([id,r])=>`<button type="button" class="race-link ${id===currentId?'active':''}" data-race="${esc(id)}"><small>${esc(r.raceDate||'日付未設定')}</small><span>${esc(r.raceName||'名称未設定')}</span></button>`;recent.innerHTML=ordered.slice(0,10).map(draw).join('');const old=ordered.slice(10);document.getElementById('olderToggle').textContent=showOlder?'過去一覧を閉じる':`過去のレースを見る（${old.length}）`;document.getElementById('olderControls').hidden=!showOlder;const year=document.getElementById('olderYear'),previous=year.value;year.innerHTML='<option value="">すべての年</option>'+[...new Set(old.map(([,r])=>(r.raceDate||'').slice(0,4)).filter(Boolean))].sort().reverse().map(y=>`<option value="${esc(y)}">${esc(y)}年</option>`).join('');year.value=[...year.options].some(o=>o.value===previous)?previous:'';const q=document.getElementById('olderSearch').value.trim().toLowerCase();older.innerHTML=old.filter(([,r])=>(!year.value||(r.raceDate||'').startsWith(year.value))&&String(r.raceName||'').toLowerCase().includes(q)).map(draw).join('')||'<p class="hint">該当するレースはありません</p>'}
+function renderSidebar(){const recent=document.getElementById('recentRaces'),older=document.getElementById('olderRaces');if(!recent)return;const ordered=Object.entries(races).sort((a,b)=>(b[1].raceDate||'').localeCompare(a[1].raceDate||'')||b[0].localeCompare(a[0]));const draw=([id,r])=>`<button type="button" class="race-link ${id===currentId?'active':''}" data-race="${esc(id)}"><small>${esc(r.raceDate||'日付未設定')}</small><span>${esc(r.raceName||'名称未設定')}</span></button>`;recent.innerHTML=ordered.map(draw).join('');const old=[];document.getElementById('olderToggle').textContent=showOlder?'過去一覧を閉じる':`過去のレースを見る（${old.length}）`;document.getElementById('olderControls').hidden=!showOlder;const year=document.getElementById('olderYear'),previous=year.value;year.innerHTML='<option value="">すべての年</option>'+[...new Set(old.map(([,r])=>(r.raceDate||'').slice(0,4)).filter(Boolean))].sort().reverse().map(y=>`<option value="${esc(y)}">${esc(y)}年</option>`).join('');year.value=[...year.options].some(o=>o.value===previous)?previous:'';const q=document.getElementById('olderSearch').value.trim().toLowerCase();older.innerHTML=old.filter(([,r])=>(!year.value||(r.raceDate||'').startsWith(year.value))&&String(r.raceName||'').toLowerCase().includes(q)).map(draw).join('')||'<p class="hint">該当するレースはありません</p>'}
 document.getElementById('raceSidebar').addEventListener('click',e=>{const b=e.target.closest('[data-race]');if(b){switchRace(b.dataset.race);setMain('prediction')}});
 document.getElementById('olderToggle').addEventListener('click',()=>{showOlder=!showOlder;renderSidebar()});document.getElementById('olderSearch').addEventListener('input',renderSidebar);document.getElementById('olderYear').addEventListener('change',renderSidebar);
 function betMoney(v){return Math.round(v).toLocaleString('ja-JP')}
@@ -801,11 +817,15 @@ const state=document.getElementById('cloudState'),login=document.getElementById(
 let user=null,ready=false,writing=Promise.resolve(),remoteIds=new Set();
 const status=(msg)=>{state.textContent=msg};
 const ref=(id)=>doc(db,'users',user.uid,'races',id);
-function queueWrite(action){writing=writing.catch(()=>{}).then(action).catch(e=>{status('同期失敗: '+(e.code||e.message)+'（端末には保存済み）');console.error(e)});return writing}
+function queueWrite(action){writing=writing.catch(()=>{}).then(action).catch(e=>{status('同期失敗: '+(e.code||e.message)+'（端末には保存済み）');console.error(e);return false});return writing}
 async function loadCloud(){
   status('クラウドのデータを確認中…');ready=false;
   const snap=await getDocs(collection(db,'users',user.uid,'races'));
-  const cloud={};snap.forEach(d=>{cloud[d.id]=d.data()});remoteIds=new Set(Object.keys(cloud));
+  const cloud={},deletedIds=new Set();
+  snap.forEach(d=>{const data=d.data();if(data && data.__racingLabDeleted===true)deletedIds.add(d.id);else cloud[d.id]=data});
+  remoteIds=new Set(Object.keys(cloud));
+  // Cloud tombstones are authoritative, including for stale localStorage copies.
+  for(const id of deletedIds)delete races[id];
   // Never discard a local-only race, or silently overwrite conflicting edits.
   const localOnly=Object.keys(races).filter(id=>!remoteIds.has(id));
   const conflicts=Object.keys(races).filter(id=>remoteIds.has(id)&&JSON.stringify(races[id])!==JSON.stringify(cloud[id]));
@@ -829,17 +849,27 @@ window.racingCloud={
   const data=structuredClone(races[id]||getData());
   status('クラウドに保存中…');
   return queueWrite(async()=>{
+   const existing=await getDoc(ref(id));
+   if(existing.exists() && existing.data()?.__racingLabDeleted===true){status('このレースは別の端末で削除されています。再読み込みしてください');return false}
    await setDoc(ref(id),data);
    remoteIds.add(id);
    status('クラウドに保存しました ✓');
    return true;
   });
  },
- deleteRace(id){if(!user||!ready||!id)return;return queueWrite(async()=>{await deleteDoc(ref(id));remoteIds.delete(id);status('選択したレースの削除をクラウドに反映しました ✓')})}
+ deleteRace(id){
+  if(!user||!ready||!id){status('削除にはGoogleログインとクラウド接続が必要です');return Promise.resolve(false)}
+  status('クラウドから削除中…');
+  return queueWrite(async()=>{
+   // Tombstone prevents another device's stale local data from resurrecting the race.
+   await setDoc(ref(id),{__racingLabDeleted:true,deletedAt:new Date().toISOString()});
+   remoteIds.delete(id);status('選択したレースの削除をクラウドに反映しました ✓');return true;
+  });
+ }
 };
 login.addEventListener('click',async()=>{try{status('Googleログイン中…');if(/iPhone|iPad|iPod/.test(navigator.userAgent)){await signInWithPopup(auth,provider)}else{await signInWithPopup(auth,provider)}}catch(e){status('ログイン失敗: '+(e.code||e.message))}});
 logout.addEventListener('click',async()=>{await signOut(auth);status('ログアウトしました（端末内データは残ります）')});
-upload.addEventListener('click',async()=>{if(!user||!ready)return;if(!confirm('現在の端末内の全レースをクラウドに送ります。クラウド上の同じレースIDは上書きされます。続けますか？'))return;saveSilent();status('全レースを送信中…');await queueWrite(async()=>{for(const [id,data] of Object.entries(races)){await setDoc(ref(id),data);remoteIds.add(id)}status(`${Object.keys(races).length}レースをクラウドに保存しました ✓`)})});
+upload.addEventListener('click',async()=>{if(!user||!ready)return;if(!confirm('現在の端末内の全レースをクラウドに送ります。クラウド上の同じレースIDは上書きされます。続けますか？'))return;saveSilent();status('全レースを送信中…');await queueWrite(async()=>{for(const [id,data] of Object.entries(races)){const existing=await getDoc(ref(id));if(existing.exists()&&existing.data()?.__racingLabDeleted===true)continue;await setDoc(ref(id),data);remoteIds.add(id)}status(`${Object.keys(races).length}レースをクラウドに保存しました ✓`)})});
 onAuthStateChanged(auth,async u=>{user=u;ready=false;login.classList.toggle('hidden',!!u);logout.classList.toggle('hidden',!u);upload.classList.toggle('hidden',!u);userLabel.textContent=u?(u.email||'ログイン中'):'';if(!u){status('未ログイン：この端末内だけに保存されます');return}try{await loadCloud()}catch(e){status('クラウドの読み込みに失敗: '+(e.code||e.message));console.error(e)}});
 getRedirectResult(auth).then(result=>{if(result?.user)status('Google認証が完了しました。クラウドを確認します…')}).catch(e=>status('ログインの処理に失敗: '+(e.code||e.message)));
 </script>
