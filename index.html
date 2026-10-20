@@ -366,15 +366,34 @@ let races={},currentId="",horses=[],filter="all",dirty=false;let bets=[],betBudg
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function styleClass(s){return ({"逃げ":"style-nige","先行":"style-senkou","差し":"style-sashi","追込":"style-oikomi","自在":"style-jizai"}[s]||"style-empty")}
 function getData(){return {bets:bets.map(x=>({...x})),betBudget,betTarget,betMode,referenceCatalog:{courses:courseCatalog,winners:winnerCatalog},horses:horses.map(h=>({...h})),...Object.fromEntries(fields.map(k=>[k,document.getElementById(k).value]))}}
-function setDirty(){dirty=true;document.getElementById("saveStatus").textContent="未保存の変更あり"}
+let autoSaveTimer=null,autoSavePending=false;
+function autoSaveNow(){
+ clearTimeout(autoSaveTimer);autoSaveTimer=null;
+ if(!autoSavePending)return;
+ autoSavePending=false;
+ try{
+  saveSilent();
+  document.getElementById("saveStatus").textContent="端末に保存済み・クラウド同期中";
+  if(typeof window.racingCloud?.saveCurrent==="function"){
+   window.racingCloud.saveCurrent().then(ok=>{
+    if(ok && !dirty)document.getElementById("saveStatus").textContent="自動保存済み";
+    else if(!ok && !dirty)document.getElementById("saveStatus").textContent="端末に保存済み（クラウド未同期）";
+   });
+  }else document.getElementById("saveStatus").textContent="端末に自動保存済み（クラウド未同期）";
+ }catch(e){document.getElementById("saveStatus").textContent="保存失敗・バックアップを確認";console.error(e)}
+}
+function setDirty(){
+ dirty=true;autoSavePending=true;document.getElementById("saveStatus").textContent="編集中・自動保存待ち";
+ clearTimeout(autoSaveTimer);autoSaveTimer=setTimeout(autoSaveNow,1200);
+}
 function toast(message){const t=document.getElementById("toast");t.textContent=message;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),1700)}
 function saveSilent(){if(currentId)races[currentId]=getData();localStorage.setItem(storeKey,JSON.stringify({races,currentId,apiUrl:document.getElementById("apiUrl").value}));refreshPicker();dirty=false;document.getElementById("saveStatus").textContent="保存済み"}
-function save(){saveSilent();refreshPicker();toast("端末に保存しました");if(typeof window.racingCloud?.saveCurrent!=="function"){document.getElementById("cloudState").textContent="クラウド保存機能が利用できません。端末には保存済みです。ページを再読み込みせず、バックアップを保存してください";return}window.racingCloud.saveCurrent()}
+function save(){clearTimeout(autoSaveTimer);autoSaveTimer=null;autoSavePending=false;saveSilent();refreshPicker();toast("端末に保存しました");if(typeof window.racingCloud?.saveCurrent!=="function"){document.getElementById("cloudState").textContent="クラウド保存機能が利用できません。端末には保存済みです。ページを再読み込みせず、バックアップを保存してください";return}window.racingCloud.saveCurrent()}
 function applyData(d){bets=(d.bets||[]).map(x=>({...x}));betBudget=String(d.betBudget??"10000");betTarget=String(d.betTarget??"10000");betMode=d.betMode||"strength";document.getElementById("betBudget").value=betBudget;document.getElementById("betTarget").value=betTarget;document.getElementById("betMode").value=betMode;if(d.referenceCatalog){courseCatalog={...courseCatalog,...(d.referenceCatalog.courses||{})};winnerCatalog={...winnerCatalog,...(d.referenceCatalog.winners||{})};saveCatalog()}selectedHorseNumber=null;horses=(d.horses||[]).map(h=>({...blankHorse(h.n),...h}));fields.forEach(k=>document.getElementById(k).value=d[k]??"");syncBiasButtons();document.getElementById("horseSort").value="number";document.getElementById("horseSortOrder").value="asc";document.getElementById("search").value="";filter="all";document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));render();renderBets();renderReviewBets();renderHorseReview();refreshReferenceViews();dirty=false;document.getElementById("saveStatus").textContent="保存済み"}
 function refreshPicker(){renderSidebar();const sel=document.getElementById("racePicker");sel.innerHTML=Object.entries(races).map(([id,r])=>`<option value="${esc(id)}" ${id===currentId?"selected":""}>${esc(r.raceDate||"日付未設定")}　${esc(r.raceName||"名称未設定")}</option>`).join("")}
-function switchRace(id){if(!races[id])return;saveSilent();window.racingCloud?.saveCurrent?.();currentId=id;applyData(races[id]);refreshPicker();persistCurrent();}
+function switchRace(id){if(!races[id])return;if(autoSavePending)autoSaveNow();else clearTimeout(autoSaveTimer);saveSilent();window.racingCloud?.saveCurrent?.();currentId=id;applyData(races[id]);refreshPicker();persistCurrent();}
 function persistCurrent(){localStorage.setItem(storeKey,JSON.stringify({races,currentId,apiUrl:document.getElementById("apiUrl").value}))}
-function createRace(){saveSilent();const id="race-"+Date.now()+"-"+Math.random().toString(36).slice(2,6);races[id]={horses:[],raceName:"新しいレース",raceDate:"",raceMemo:"",trackMemo:"",resultRank:"",resultOdds:"",resultProfit:"",reviewMemo:""};currentId=id;applyData(races[id]);refreshPicker();persistCurrent();toast("新しいレースを作成しました");window.racingCloud?.saveCurrent?.()}
+function createRace(){if(autoSavePending)autoSaveNow();else clearTimeout(autoSaveTimer);saveSilent();const id="race-"+Date.now()+"-"+Math.random().toString(36).slice(2,6);races[id]={horses:[],raceName:"新しいレース",raceDate:"",raceMemo:"",trackMemo:"",resultRank:"",resultOdds:"",resultProfit:"",reviewMemo:""};currentId=id;applyData(races[id]);refreshPicker();persistCurrent();toast("新しいレースを作成しました");window.racingCloud?.saveCurrent?.()}
 let selectedHorseNumber=null,drawSorted=false;
 function drawNumber(h){const n=Number(h.confirmedNumber);return Number.isInteger(n)&&n>=1&&n<=30?n:999}
 function compareDrawOrder(a,b){return drawNumber(a)-drawNumber(b)||Number(a.n)-Number(b.n)}
@@ -662,6 +681,7 @@ for(const [type,prefix] of [['course','course']]){
 for(const id of ['courseVenue','courseSpec'])document.getElementById(id).addEventListener('change',()=>{refreshReferenceViews();fillCourse()});
 try{const raw=JSON.parse(localStorage.getItem(catalogKey)||'{}');courseCatalog=raw.courses||{};winnerCatalog=raw.winners||{}}catch(e){}
 
+window.addEventListener("pagehide",()=>{if(autoSavePending){clearTimeout(autoSaveTimer);try{saveSilent()}catch(e){console.error(e)}}});
 document.getElementById("saveBtn").addEventListener("click",save);
 document.getElementById("exportBtn").addEventListener("click",()=>{saveSilent();const blob=new Blob([JSON.stringify({version:2,races,currentId},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="racing-lab-all-races.json";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)});
 function csvRows(txt){const rows=[];let row=[],cell="",quoted=false;for(let i=0;i<txt.length;i++){const c=txt[i];if(c==='"'){if(quoted&&txt[i+1]==='"'){cell+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(cell);cell=""}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&txt[i+1]==='\n')i++;row.push(cell);if(row.some(v=>v.trim()))rows.push(row);row=[];cell=""}else cell+=c}row.push(cell);if(row.some(v=>v.trim()))rows.push(row);const headers=(rows.shift()||[]).map(v=>v.trim().replace(/^\uFEFF/,''));return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]||""])))}
