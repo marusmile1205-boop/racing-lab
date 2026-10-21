@@ -820,7 +820,18 @@ let cloudBaseline=new Map(),conflictIds=new Set(),latestCloud=new Map(),deletedI
 const mirrorKey='racingLabCloudMirrorV2';
 const status=msg=>{state.textContent=msg};
 const ref=id=>doc(db,'users',user.uid,'races',id);
-const signature=data=>JSON.stringify(data);
+// Compare JSON values by meaning, not by object property insertion order.
+// Array order is significant (horses and bets must retain their order).
+function canonicalize(value){
+ if(Array.isArray(value))return value.map(canonicalize);
+ if(value&&typeof value==='object'){
+  const out={};
+  for(const key of Object.keys(value).sort())out[key]=canonicalize(value[key]);
+  return out;
+ }
+ return value;
+}
+const signature=data=>JSON.stringify(canonicalize(data));
 const mirrorRead=()=>{try{return JSON.parse(localStorage.getItem(mirrorKey)||'{}')}catch{return {}}};
 function mirrorWrite(id,data){const all=mirrorRead();if(data===null)delete all[id];else all[id]=data;localStorage.setItem(mirrorKey,JSON.stringify(all))}
 function backupConflict(id,data){try{const key='racingLabConflictBackup_'+Date.now()+'_'+id;localStorage.setItem(key,JSON.stringify({id,data,createdAt:new Date().toISOString()}))}catch(e){console.warn('Backup failed',e)}}
