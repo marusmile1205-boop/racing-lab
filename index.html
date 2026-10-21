@@ -317,7 +317,7 @@ button,select{touch-action:manipulation}
 </head>
 <body><div class="app">
 <header><div class="brand">RACING <span>LAB</span> <small style="font-weight:500;color:#777">/ NOTE</small></div><div class="head-actions"><button class="btn" id="exportBtn">データを書き出す</button><button class="btn primary" id="saveBtn">保存</button></div></header>
-<div class="cloudbar"><strong style="font-size:12px">☁ クラウド同期</strong><span class="cloudstate" id="cloudState">Googleログインすると同期できます（現在は端末内保存）</span><span class="userlabel" id="cloudUser"></span><button class="btn" id="cloudLogin">Googleでログイン</button><button class="btn hidden" id="cloudUpload">この端末のデータをクラウドへ送る</button><button class="btn hidden" id="cloudLogout">ログアウト</button></div><div class="layout"><nav id="raceSidebar"><strong>保存済みレース</strong><div id="recentRaces"></div><button type="button" class="btn sidebar-toggle" id="olderToggle">過去のレースを見る</button><div id="olderControls" hidden><input id="olderSearch" placeholder="レース名で検索"><select id="olderYear"><option value="">すべての年</option></select><div id="olderRaces"></div></div></nav>
+<div class="cloudbar"><strong style="font-size:12px">☁ クラウド同期</strong><span class="cloudstate" id="cloudState">Googleログインすると同期できます（現在は端末内保存）</span><span class="userlabel" id="cloudUser"></span><button class="btn" id="cloudLogin">Googleでログイン</button><button class="btn hidden" id="cloudResolve" type="button">クラウド版を確認</button><button class="btn hidden" id="cloudUpload">この端末のデータをクラウドへ送る</button><button class="btn hidden" id="cloudLogout">ログアウト</button></div><div class="layout"><nav id="raceSidebar"><strong>保存済みレース</strong><div id="recentRaces"></div><button type="button" class="btn sidebar-toggle" id="olderToggle">過去のレースを見る</button><div id="olderControls" hidden><input id="olderSearch" placeholder="レース名で検索"><select id="olderYear"><option value="">すべての年</option></select><div id="olderRaces"></div></div></nav>
 <main>
 <div class="title-row"><div><div class="eyebrow">RACE NOTE / MULTI RACE</div><h1 id="pageTitle">予想ノート</h1><p class="subtitle" id="pageSubtitle">レースごとに予想を保存</p></div><span class="status" id="saveStatus">未保存の変更なし</span></div>
 <section class="panel"><h2>レースを選ぶ</h2><div class="race-switch"><div class="field race-picker"><label>保存したレース</label><select id="racePicker"></select></div><button class="btn small-btn" id="newRaceBtn">＋ 新規レース</button><button class="btn small-btn" id="deleteRaceBtn">レースを削除</button></div><div class="data-bar"><button class="btn primary" id="netkeibaPasteBtn" type="button">netkeibaから貼り付け</button><button class="btn hidden" id="importBtn">出走馬データを安全に読み込む</button><input type="file" id="importFile" accept=".json,.csv,application/json,text/csv" class="hidden"><button class="btn hidden" id="apiFetchBtn">出走馬情報を取得</button><span class="data-state hidden" id="dataState">取得先未設定</span></div><details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px;font-weight:700">外部データ取得の設定</summary><div class="field" style="margin-top:10px"><label>出走馬情報APIのURL（任意・レースIDは {raceId} に置換）</label><input id="apiUrl" placeholder="https://example.com/api/races/{raceId}"></div><p class="hint">JSON形式の出走馬情報を返すAPIを指定してください。API側でブラウザからのアクセス（CORS）が許可されている必要があります。取得した馬名・馬番・斤量は取り込み、既存の予想メモはできるだけ保持します。</p></details><p class="hint">取得先がなくても、CSV/JSONを読み込めます。CSVの列名例：number,name,weight,odds,popularity。馬番確定後に取り込みます。馬名で照合し、入力済みの予想を保持します。取り込み前に確認画面が出ます。架空のデータは表示しません。</p></section>
@@ -810,101 +810,127 @@ refreshReferenceViews();
 <script type="module">
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {getAuth,GoogleAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,onAuthStateChanged,signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import {getFirestore,doc,getDoc,setDoc,deleteDoc,collection,getDocs,onSnapshot} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {getFirestore,doc,getDoc,setDoc,deleteDoc,collection,getDocs,onSnapshot,runTransaction} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 const config={apiKey:'AIzaSyDxYN_8j_wwdohtQsfMwTWqucRIT8P867M',authDomain:'racing-lab.web.app',projectId:'racing-lab',storageBucket:'racing-lab.firebasestorage.app',messagingSenderId:'19732569395',appId:'1:19732569395:web:94168e364e10ae3123b246'};
 const app=initializeApp(config),auth=getAuth(app),db=getFirestore(app),provider=new GoogleAuthProvider();
 const state=document.getElementById('cloudState'),login=document.getElementById('cloudLogin'),logout=document.getElementById('cloudLogout'),upload=document.getElementById('cloudUpload'),userLabel=document.getElementById('cloudUser');
 let user=null,ready=false,writing=Promise.resolve(),remoteIds=new Set(),stopWatching=null;
-let cloudBaseline=new Map();
-const status=(msg)=>{state.textContent=msg};
-const ref=(id)=>doc(db,'users',user.uid,'races',id);
+const resolveBtn=document.getElementById('cloudResolve');
+let cloudBaseline=new Map(),conflictIds=new Set(),latestCloud=new Map(),deletedIds=new Set(),pendingWrites=new Set();
+const mirrorKey='racingLabCloudMirrorV2';
+const status=msg=>{state.textContent=msg};
+const ref=id=>doc(db,'users',user.uid,'races',id);
+const signature=data=>JSON.stringify(data);
+const mirrorRead=()=>{try{return JSON.parse(localStorage.getItem(mirrorKey)||'{}')}catch{return {}}};
+function mirrorWrite(id,data){const all=mirrorRead();if(data===null)delete all[id];else all[id]=data;localStorage.setItem(mirrorKey,JSON.stringify(all))}
+function backupConflict(id,data){try{const key='racingLabConflictBackup_'+Date.now()+'_'+id;localStorage.setItem(key,JSON.stringify({id,data,createdAt:new Date().toISOString()}))}catch(e){console.warn('Backup failed',e)}}
+function conflictStatus(){resolveBtn.classList.toggle('hidden',!conflictIds.size);if(conflictIds.size)status(`同期の競合が${conflictIds.size}件あります。端末の変更は保護中です。「クラウド版を確認」で選択してください`)}
 function queueWrite(action){writing=writing.catch(()=>{}).then(action).catch(e=>{status('同期失敗: '+(e.code||e.message)+'（端末には保存済み）');console.error(e);return false});return writing}
 async function loadCloud(){
-  status('クラウドのデータを確認中…');ready=false;
-  const snap=await getDocs(collection(db,'users',user.uid,'races'));
-  const cloud={},deletedIds=new Set();
-  snap.forEach(d=>{const data=d.data();if(data && data.__racingLabDeleted===true)deletedIds.add(d.id);else cloud[d.id]=data});
-  remoteIds=new Set(Object.keys(cloud));
-  cloudBaseline=new Map(Object.entries(cloud).map(([id,data])=>[id,JSON.stringify(data)]));
-  // Cloud tombstones are authoritative, including for stale localStorage copies.
-  for(const id of deletedIds)delete races[id];
-  // Never discard a local-only race, or silently overwrite conflicting edits.
-  const localOnly=Object.keys(races).filter(id=>!remoteIds.has(id));
-  const conflicts=Object.keys(races).filter(id=>remoteIds.has(id)&&JSON.stringify(races[id])!==JSON.stringify(cloud[id]));
-  // For conflicting IDs keep the local version until the user explicitly saves it.
-  races={...cloud,...races};
-  currentId=races[currentId]?currentId:Object.keys(races)[0];
-  if(currentId){applyData(races[currentId]);refreshPicker();persistCurrent()}
-  ready=true;
-  startWatchingCloud(user.uid);
-  if(localOnly.length||conflicts.length){
-    status(`クラウド${remoteIds.size}件を確認。端末だけの${localOnly.length}件・内容が異なる${conflicts.length}件を保護中。同期するレースを選んで「保存」を押してください`);
-  }else{
-    status(`クラウドから${remoteIds.size}レースを読み込みました。保存で同期します`);
-  }
+ status('クラウドのデータを確認中…');ready=false;
+ const snap=await getDocs(collection(db,'users',user.uid,'races'));
+ const cloud={},mirror=mirrorRead();deletedIds=new Set();latestCloud=new Map();
+ snap.forEach(d=>{const data=d.data();if(data?.__racingLabDeleted===true)deletedIds.add(d.id);else{cloud[d.id]=data;latestCloud.set(d.id,data)}});
+ remoteIds=new Set(Object.keys(cloud));cloudBaseline=new Map(Object.entries(cloud).map(([id,data])=>[id,signature(data)]));
+ for(const id of deletedIds){if(races[id])backupConflict(id,races[id]);delete races[id];mirrorWrite(id,null)}
+ conflictIds.clear();
+ for(const [id,data] of Object.entries(cloud)){
+  if(!races[id]){races[id]=data;mirrorWrite(id,data);continue}
+  if(signature(races[id])===signature(data)){mirrorWrite(id,data);continue}
+  // Only overwrite a cached local copy when it matches the last cloud version seen on this device.
+  if(mirror[id]!==undefined && signature(races[id])===signature(mirror[id])){races[id]=data;mirrorWrite(id,data)}
+  else conflictIds.add(id);
+ }
+ currentId=races[currentId]?currentId:Object.keys(races)[0]||'';
+ if(currentId)applyData(races[currentId]);refreshPicker();persistCurrent();ready=true;
+ startWatchingCloud(user.uid);
+ conflictStatus();if(!conflictIds.size)status(`クラウド${remoteIds.size}件と接続しました。変更は自動同期されます ✓`);
 }
-// Watch changes made on another device. Never overwrite a locally edited race.
 function startWatchingCloud(uid){
  if(stopWatching){stopWatching();stopWatching=null}
  let first=true;
  stopWatching=onSnapshot(collection(db,'users',uid,'races'),snapshot=>{
   if(!user||user.uid!==uid||!ready)return;
-  if(first){first=false;return}
-  let changed=false,removedCurrent=false,added=0;
+  // Process the initial snapshot too, to close the getDocs/onSnapshot gap.
+  let changed=false;
   for(const change of snapshot.docChanges()){
    const id=change.doc.id,data=change.doc.data();
    if(data?.__racingLabDeleted===true||change.type==='removed'){
-    remoteIds.delete(id);cloudBaseline.delete(id);
-    if(races[id]){delete races[id];changed=true;if(id===currentId)removedCurrent=true}
+    remoteIds.delete(id);latestCloud.delete(id);cloudBaseline.delete(id);conflictIds.delete(id);
+    if(races[id]){backupConflict(id,races[id]);delete races[id];changed=true}mirrorWrite(id,null);
     continue;
    }
    const previous=cloudBaseline.get(id);
-   cloudBaseline.set(id,JSON.stringify(data));remoteIds.add(id);
-   if(!races[id]){races[id]=data;changed=true;added++;continue}
-   // Apply a remote edit only if this device has not changed its last known cloud version.
-   if(previous!==undefined && JSON.stringify(races[id])===previous && !(id===currentId&&(dirty||autoSavePending))){
-    races[id]=data;changed=true;
+   cloudBaseline.set(id,signature(data));latestCloud.set(id,data);remoteIds.add(id);
+   if(!races[id]){races[id]=data;mirrorWrite(id,data);changed=true;continue}
+   if(signature(races[id])===signature(data)){conflictIds.delete(id);mirrorWrite(id,data);continue}
+   const localEditing=(id===currentId&&(dirty||autoSavePending))||pendingWrites.has(id);
+   // A local copy equal to the previous cloud revision has no pending edits.
+   if(!localEditing && previous!==undefined && signature(races[id])===previous && !conflictIds.has(id)){
+    races[id]=data;mirrorWrite(id,data);changed=true;
     if(id===currentId)applyData(data);
-   }
+   }else if(!localEditing && !conflictIds.has(id) && mirrorRead()[id]!==undefined && signature(races[id])===signature(mirrorRead()[id])){
+    races[id]=data;mirrorWrite(id,data);changed=true;if(id===currentId)applyData(data);
+   }else if(signature(races[id])!==signature(data)){conflictIds.add(id)}
   }
-  if(changed){
-   if(removedCurrent){currentId=Object.keys(races)[0]||'';if(currentId)applyData(races[currentId]);else status('すべてのレースが削除されました。新規レースを作成してください')}
-   refreshPicker();persistCurrent();
-   if(added)status(`別の端末から${added}件のレースを受信しました ✓`);
-  }
+  if(changed){if(!races[currentId]){currentId=Object.keys(races)[0]||'';if(currentId)applyData(races[currentId])}refreshPicker();persistCurrent()}
+  conflictStatus();if(!conflictIds.size && !first)status('ほかの端末の変更を反映しました ✓');first=false;
  },e=>{status('リアルタイム同期エラー: '+(e.code||e.message));console.error(e)});
 }
+resolveBtn.addEventListener('click',()=>{
+ const ids=[...conflictIds];if(!ids.length)return;
+ const id=ids.includes(currentId)?currentId:ids[0],cloud=latestCloud.get(id);
+ if(!cloud){status('クラウドの最新版を確認できません。再ログインして確認してください');return}
+ const name=cloud.raceName||id;
+ if(!confirm(`「${name}」について、クラウド版をこの端末に反映しますか？\n端末側の現在の内容は復元用にバックアップ保存します。\nキャンセルすると端末側の内容を保持します。`))return;
+ if(id===currentId&&(dirty||autoSavePending)){status('編集中の内容があります。入力を終えてから再度確認してください');return}
+ backupConflict(id,races[id]);races[id]=structuredClone(cloud);mirrorWrite(id,cloud);conflictIds.delete(id);
+ if(id===currentId)applyData(races[id]);refreshPicker();persistCurrent();conflictStatus();
+ if(!conflictIds.size)status('クラウド版を反映しました。自動同期を継続します ✓');
+});
 window.racingCloud={
  saveCurrent(){
   if(!user){status('Googleログインが必要です（端末には保存済み）');return Promise.resolve(false)}
-  if(!ready){status('クラウド同期の準備が未完了です。端末には保存済みです。バックアップを確認してください');return Promise.resolve(false)}
-  if(!currentId){status('保存するレースが選択されていません');return Promise.resolve(false)}
-  const id=currentId;
-  const data=structuredClone(races[id]||getData());
-  status('クラウドに保存中…');
+  if(!ready){status('クラウド同期の準備が未完了です（端末には保存済み）');return Promise.resolve(false)}
+  if(!currentId)return Promise.resolve(false);
+  const id=currentId,data=structuredClone(races[id]||getData());
+  if(conflictIds.has(id)){conflictStatus();return Promise.resolve(false)}
+  status('クラウドに自動保存中…');
   return queueWrite(async()=>{
-   const existing=await getDoc(ref(id));
-   if(existing.exists() && existing.data()?.__racingLabDeleted===true){status('このレースは別の端末で削除されています。再読み込みしてください');return false}
-   await setDoc(ref(id),data);
-   remoteIds.add(id);cloudBaseline.set(id,JSON.stringify(data));
-   status('クラウドに保存しました ✓');
-   return true;
+   const expected=cloudBaseline.get(id);pendingWrites.add(id);
+   let result='';
+   await runTransaction(db,async tx=>{
+    const docSnap=await tx.get(ref(id));const remote=docSnap.exists()?docSnap.data():null;
+    if(remote?.__racingLabDeleted===true){result='deleted';return}
+    if(remote && expected!==undefined && signature(remote)!==expected){result='conflict';return}
+    if(remote && expected===undefined){result='conflict';return}
+    tx.set(ref(id),data);result='saved';
+   });
+   pendingWrites.delete(id);
+   if(result!=='saved'){
+    if(result==='conflict'){
+     const fresh=await getDoc(ref(id));if(fresh.exists()){latestCloud.set(id,fresh.data());cloudBaseline.set(id,signature(fresh.data()))}
+     conflictIds.add(id);conflictStatus();
+    }else status('他の端末で削除されたレースです。端末のバックアップを確認してください');
+    return false;
+   }
+   remoteIds.add(id);cloudBaseline.set(id,signature(data));latestCloud.set(id,data);mirrorWrite(id,data);
+   status('クラウドに自動保存しました ✓');return true;
   });
  },
  deleteRace(id){
   if(!user||!ready||!id){status('削除にはGoogleログインとクラウド接続が必要です');return Promise.resolve(false)}
-  status('クラウドから削除中…');
   return queueWrite(async()=>{
-   // Tombstone prevents another device's stale local data from resurrecting the race.
    await setDoc(ref(id),{__racingLabDeleted:true,deletedAt:new Date().toISOString()});
-   remoteIds.delete(id);cloudBaseline.delete(id);status('選択したレースの削除をクラウドに反映しました ✓');return true;
+   remoteIds.delete(id);cloudBaseline.delete(id);latestCloud.delete(id);conflictIds.delete(id);mirrorWrite(id,null);
+   status('選択したレースの削除をクラウドに反映しました ✓');return true;
   });
  }
 };
 login.addEventListener('click',async()=>{try{status('Googleログイン中…');if(/iPhone|iPad|iPod/.test(navigator.userAgent)){await signInWithPopup(auth,provider)}else{await signInWithPopup(auth,provider)}}catch(e){status('ログイン失敗: '+(e.code||e.message))}});
 logout.addEventListener('click',async()=>{await signOut(auth);status('ログアウトしました（端末内データは残ります）')});
-upload.addEventListener('click',async()=>{if(!user||!ready)return;if(!confirm('現在の端末内の全レースをクラウドに送ります。クラウド上の同じレースIDは上書きされます。続けますか？'))return;saveSilent();status('全レースを送信中…');await queueWrite(async()=>{for(const [id,data] of Object.entries(races)){const existing=await getDoc(ref(id));if(existing.exists()&&existing.data()?.__racingLabDeleted===true)continue;await setDoc(ref(id),data);remoteIds.add(id)}status(`${Object.keys(races).length}レースをクラウドに保存しました ✓`)})});
-onAuthStateChanged(auth,async u=>{if(stopWatching){stopWatching();stopWatching=null}user=u;ready=false;login.classList.toggle('hidden',!!u);logout.classList.toggle('hidden',!u);upload.classList.toggle('hidden',!u);userLabel.textContent=u?(u.email||'ログイン中'):'';if(!u){status('未ログイン：この端末内だけに保存されます');return}try{await loadCloud()}catch(e){status('クラウドの読み込みに失敗: '+(e.code||e.message));console.error(e)}});
+upload.addEventListener('click',()=>{status('安全のため一括上書きは停止中です。各レースの自動同期、または「クラウド版を確認」を利用してください')});
+onAuthStateChanged(auth,async u=>{if(stopWatching){stopWatching();stopWatching=null}user=u;ready=false;login.classList.toggle('hidden',!!u);logout.classList.toggle('hidden',!u);upload.classList.add('hidden');resolveBtn.classList.toggle('hidden',!u||!conflictIds.size);userLabel.textContent=u?(u.email||'ログイン中'):'';if(!u){status('未ログイン：この端末内だけに保存されます');return}try{await loadCloud()}catch(e){status('クラウドの読み込みに失敗: '+(e.code||e.message));console.error(e)}});
 getRedirectResult(auth).then(result=>{if(result?.user)status('Google認証が完了しました。クラウドを確認します…')}).catch(e=>status('ログインの処理に失敗: '+(e.code||e.message)));
 </script>
 <script>
