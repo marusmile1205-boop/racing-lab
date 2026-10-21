@@ -810,11 +810,12 @@ refreshReferenceViews();
 <script type="module">
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {getAuth,GoogleAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,onAuthStateChanged,signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import {getFirestore,doc,getDoc,setDoc,deleteDoc,collection,getDocs} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {getFirestore,doc,getDoc,setDoc,deleteDoc,collection,getDocs,onSnapshot} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 const config={apiKey:'AIzaSyDxYN_8j_wwdohtQsfMwTWqucRIT8P867M',authDomain:'racing-lab.web.app',projectId:'racing-lab',storageBucket:'racing-lab.firebasestorage.app',messagingSenderId:'19732569395',appId:'1:19732569395:web:94168e364e10ae3123b246'};
 const app=initializeApp(config),auth=getAuth(app),db=getFirestore(app),provider=new GoogleAuthProvider();
 const state=document.getElementById('cloudState'),login=document.getElementById('cloudLogin'),logout=document.getElementById('cloudLogout'),upload=document.getElementById('cloudUpload'),userLabel=document.getElementById('cloudUser');
-let user=null,ready=false,writing=Promise.resolve(),remoteIds=new Set();
+let user=null,ready=false,writing=Promise.resolve(),remoteIds=new Set(),stopWatching=null;
+let cloudBaseline=new Map();
 const status=(msg)=>{state.textContent=msg};
 const ref=(id)=>doc(db,'users',user.uid,'races',id);
 function queueWrite(action){writing=writing.catch(()=>{}).then(action).catch(e=>{status('同期失敗: '+(e.code||e.message)+'（端末には保存済み）');console.error(e);return false});return writing}
@@ -824,6 +825,7 @@ async function loadCloud(){
   const cloud={},deletedIds=new Set();
   snap.forEach(d=>{const data=d.data();if(data && data.__racingLabDeleted===true)deletedIds.add(d.id);else cloud[d.id]=data});
   remoteIds=new Set(Object.keys(cloud));
+  cloudBaseline=new Map(Object.entries(cloud).map(([id,data])=>[id,JSON.stringify(data)]));
   // Cloud tombstones are authoritative, including for stale localStorage copies.
   for(const id of deletedIds)delete races[id];
   // Never discard a local-only race, or silently overwrite conflicting edits.
@@ -834,11 +836,43 @@ async function loadCloud(){
   currentId=races[currentId]?currentId:Object.keys(races)[0];
   if(currentId){applyData(races[currentId]);refreshPicker();persistCurrent()}
   ready=true;
+  startWatchingCloud(user.uid);
   if(localOnly.length||conflicts.length){
     status(`クラウド${remoteIds.size}件を確認。端末だけの${localOnly.length}件・内容が異なる${conflicts.length}件を保護中。同期するレースを選んで「保存」を押してください`);
   }else{
     status(`クラウドから${remoteIds.size}レースを読み込みました。保存で同期します`);
   }
+}
+// Watch changes made on another device. Never overwrite a locally edited race.
+function startWatchingCloud(uid){
+ if(stopWatching){stopWatching();stopWatching=null}
+ let first=true;
+ stopWatching=onSnapshot(collection(db,'users',uid,'races'),snapshot=>{
+  if(!user||user.uid!==uid||!ready)return;
+  if(first){first=false;return}
+  let changed=false,removedCurrent=false,added=0;
+  for(const change of snapshot.docChanges()){
+   const id=change.doc.id,data=change.doc.data();
+   if(data?.__racingLabDeleted===true||change.type==='removed'){
+    remoteIds.delete(id);cloudBaseline.delete(id);
+    if(races[id]){delete races[id];changed=true;if(id===currentId)removedCurrent=true}
+    continue;
+   }
+   const previous=cloudBaseline.get(id);
+   cloudBaseline.set(id,JSON.stringify(data));remoteIds.add(id);
+   if(!races[id]){races[id]=data;changed=true;added++;continue}
+   // Apply a remote edit only if this device has not changed its last known cloud version.
+   if(previous!==undefined && JSON.stringify(races[id])===previous && !(id===currentId&&(dirty||autoSavePending))){
+    races[id]=data;changed=true;
+    if(id===currentId)applyData(data);
+   }
+  }
+  if(changed){
+   if(removedCurrent){currentId=Object.keys(races)[0]||'';if(currentId)applyData(races[currentId]);else status('すべてのレースが削除されました。新規レースを作成してください')}
+   refreshPicker();persistCurrent();
+   if(added)status(`別の端末から${added}件のレースを受信しました ✓`);
+  }
+ },e=>{status('リアルタイム同期エラー: '+(e.code||e.message));console.error(e)});
 }
 window.racingCloud={
  saveCurrent(){
@@ -852,7 +886,7 @@ window.racingCloud={
    const existing=await getDoc(ref(id));
    if(existing.exists() && existing.data()?.__racingLabDeleted===true){status('このレースは別の端末で削除されています。再読み込みしてください');return false}
    await setDoc(ref(id),data);
-   remoteIds.add(id);
+   remoteIds.add(id);cloudBaseline.set(id,JSON.stringify(data));
    status('クラウドに保存しました ✓');
    return true;
   });
@@ -863,14 +897,14 @@ window.racingCloud={
   return queueWrite(async()=>{
    // Tombstone prevents another device's stale local data from resurrecting the race.
    await setDoc(ref(id),{__racingLabDeleted:true,deletedAt:new Date().toISOString()});
-   remoteIds.delete(id);status('選択したレースの削除をクラウドに反映しました ✓');return true;
+   remoteIds.delete(id);cloudBaseline.delete(id);status('選択したレースの削除をクラウドに反映しました ✓');return true;
   });
  }
 };
 login.addEventListener('click',async()=>{try{status('Googleログイン中…');if(/iPhone|iPad|iPod/.test(navigator.userAgent)){await signInWithPopup(auth,provider)}else{await signInWithPopup(auth,provider)}}catch(e){status('ログイン失敗: '+(e.code||e.message))}});
 logout.addEventListener('click',async()=>{await signOut(auth);status('ログアウトしました（端末内データは残ります）')});
 upload.addEventListener('click',async()=>{if(!user||!ready)return;if(!confirm('現在の端末内の全レースをクラウドに送ります。クラウド上の同じレースIDは上書きされます。続けますか？'))return;saveSilent();status('全レースを送信中…');await queueWrite(async()=>{for(const [id,data] of Object.entries(races)){const existing=await getDoc(ref(id));if(existing.exists()&&existing.data()?.__racingLabDeleted===true)continue;await setDoc(ref(id),data);remoteIds.add(id)}status(`${Object.keys(races).length}レースをクラウドに保存しました ✓`)})});
-onAuthStateChanged(auth,async u=>{user=u;ready=false;login.classList.toggle('hidden',!!u);logout.classList.toggle('hidden',!u);upload.classList.toggle('hidden',!u);userLabel.textContent=u?(u.email||'ログイン中'):'';if(!u){status('未ログイン：この端末内だけに保存されます');return}try{await loadCloud()}catch(e){status('クラウドの読み込みに失敗: '+(e.code||e.message));console.error(e)}});
+onAuthStateChanged(auth,async u=>{if(stopWatching){stopWatching();stopWatching=null}user=u;ready=false;login.classList.toggle('hidden',!!u);logout.classList.toggle('hidden',!u);upload.classList.toggle('hidden',!u);userLabel.textContent=u?(u.email||'ログイン中'):'';if(!u){status('未ログイン：この端末内だけに保存されます');return}try{await loadCloud()}catch(e){status('クラウドの読み込みに失敗: '+(e.code||e.message));console.error(e)}});
 getRedirectResult(auth).then(result=>{if(result?.user)status('Google認証が完了しました。クラウドを確認します…')}).catch(e=>status('ログインの処理に失敗: '+(e.code||e.message)));
 </script>
 <script>
