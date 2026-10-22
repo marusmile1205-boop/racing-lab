@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartRc 接続テスト | RACING LAB</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",sans-serif;color:#252a31;background:#f6f7f9}*{box-sizing:border-box}main{max-width:680px;margin:50px auto;padding:28px;background:white;border:1px solid #e4e7eb;border-radius:18px}h1{font-size:24px;margin:0 0 8px}.sub{color:#626d79}button{background:#ea8278;color:white;border:0;border-radius:10px;padding:14px 22px;font-size:16px;font-weight:700;cursor:pointer}button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;word-break:break-word;background:#f2f4f7;border-radius:10px;padding:16px;min-height:80px}small{color:#697480}code{word-break:break-all}@media(max-width:700px){main{margin:14px;padding:20px}}
+</style>
+</head>
+<body><main>
+<p class="sub">RACING LAB / 独立テストページ</p>
+<h1>SmartRc 接続テスト</h1>
+<p>このページは既存のRACING LABやFirebaseに接続しません。ボタンを押すと、指定した菊花賞の出走馬データをSmartRcに1回問い合わせます。取得した内容は保存しません。</p>
+<p><strong>対象:</strong> 2026年10月25日 菊花賞<br><strong>レースコード:</strong> <code>2026102508040911</code></p>
+<button id="run" type="button">接続テスト開始</button>
+<h2>結果</h2><pre id="output" role="status" aria-live="polite">まだテストしていません。</pre>
+<small>このテストはブラウザからのCORS通信可否を確認します。成功しても、本番の自動取得が完成したことにはなりません。失敗した場合はサーバー側の制限などを追加調査します。</small>
+</main>
+<script>
+(() => {
+  'use strict';
+  const button = document.getElementById('run');
+  const output = document.getElementById('output');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    output.textContent = '接続中…（最大15秒）';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://www.smartrc.jp/v3/smartrc.php/runners/view', {
+        method: 'POST',
+        mode: 'cors',
+        credentials: 'omit',
+        redirect: 'error',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({rcode:'2026102508040911', toku:'1', page:1, start:0, limit:25}),
+        signal: controller.signal
+      });
+      const body = await response.text();
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = null; }
+      output.textContent = [
+        'ブラウザから応答を読み取れました。',
+        'HTTPステータス: ' + response.status,
+        'JSON形式: ' + (parsed !== null ? 'はい' : 'いいえ'),
+        'success: ' + (parsed && typeof parsed.success === 'boolean' ? parsed.success : '不明'),
+        'total: ' + (parsed && typeof parsed.total === 'number' ? parsed.total : '不明'),
+        'data件数: ' + (parsed && Array.isArray(parsed.data) ? parsed.data.length : '不明'),
+        !response.ok ? '注意: HTTPエラー応答です。' : ''
+      ].filter(Boolean).join('\n');
+    } catch (error) {
+      output.textContent = error.name === 'AbortError'
+        ? '15秒でタイムアウトしました。'
+        : 'ブラウザから応答を読み取れませんでした。\nエラー種類: ' + error.name + '\n内容: ' + error.message + '\n\nCORS制限、ネットワーク、認証条件などが考えられます。この結果だけで原因は断定できません。';
+    } finally {
+      clearTimeout(timeout);
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+</body></html>
